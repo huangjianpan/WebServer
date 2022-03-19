@@ -5,9 +5,12 @@ TcpServer::TcpServer(const InetAddress &address, const MessageCallback &cb)
     threadPool_(std::make_unique<EventLoopThreadPool>()),
     acceptor_(nullptr),
     address_(address),
-    timerQueue(&loop_, std::bind(&TcpServer::closeExpiredConnections, this, std::placeholders::_1)), 
+    timerQueue_(2 * 1000), 
+    timerQueueChannel_(&loop_, timerQueue_.timerfd()),
     messageCallback_(cb)
 {
+    timerQueueChannel_.setReadCallback(std::bind(&TcpServer::closeExpiredConnections, this));
+    timerQueueChannel_.enableRead();
     threadPool_->setBaseLoop(&loop_);
     acceptor_.reset(new Acceptor(&loop_, address_, 
                         std::bind(&TcpServer::newConnection, this, std::placeholders::_1, std::placeholders::_2)));
@@ -28,9 +31,9 @@ void TcpServer::newConnection(int connectionFd, const InetAddress &peerAddress) 
         std::lock_guard<SpinMutex> lock(mutex_);
         connections_.emplace(connectionFd, connection);
     }
-    timerQueue.addTimer(connection);
+    TimerId id = timerQueue_.addTimer(20 * 1000);
+    timerConns_.emplace(id, connection);
 
-    // printf("total TCP connections (new connection) : %lu\n", connections_.size());
     ioLoop->runInLoop(std::bind(&TcpConnection::connectEstablished, connection));
 }
 
@@ -39,16 +42,19 @@ void TcpServer::closeConnection(const TcpConnectionPtr &connection) {
         std::lock_guard<SpinMutex> lock(mutex_);
         connections_.erase(connection->fd());
     }
-    
-    // printf("total TCP connections (close connection): %lu\n", connections_.size());
 }
 
-void TcpServer::closeExpiredConnections(std::vector<std::weak_ptr<TcpConnection>> &connections) {
-    TcpConnectionPtr conn;
-    for (auto &p : connections) {
-        if ((conn = p.lock()) != nullptr) {
-            printf("expired connection fd = %d\n", conn->fd());
-            conn->ownerLoop()->runInLoop(std::bind(&TcpServer::closeConnection, this, conn));
+void TcpServer::closeExpiredConnections() {
+    timerQueue_.handleExpired();
+    for (Timer& timer : timerQueue_.getExpiredTimers()) {
+        auto it = timerConns_.find(timer.id);
+        if (it != timerConns_.end()) {
+            auto conn = it->second.lock();
+            if (conn) {
+                printf("expired connection fd = %d, timerId = %lu, expiredTime = %ld\n", conn->fd(), timer.id, timer.expiredMsec);
+                conn->ownerLoop()->runInLoop(std::bind(&TcpServer::closeConnection, this, conn));
+            }
+            timerConns_.erase(it);
         }
     }
 }

@@ -31,7 +31,7 @@ private:
 
     void closeConnection(const TcpConnectionPtr &connection);
 
-    void closeExpiredConnections(std::vector<std::weak_ptr<TcpConnection>> &connections);
+    void closeExpiredConnections();
 
     using TcpConnectionMap = std::unordered_map<int, TcpConnectionPtr>;
     
@@ -41,10 +41,13 @@ private:
     std::unique_ptr<Acceptor> acceptor_;
     InetAddress address_;
 
-    SpinMutex mutex_;
-    TcpConnectionMap connections_;  // GUARY BY mutex_
+    std::unordered_map<TimerId, std::weak_ptr<TcpConnection>> timerConns_;
+    TimerQueue timerQueue_;
+    Channel timerQueueChannel_;
 
-    TimerQueue timerQueue;
+    SpinMutex mutex_;
+    TcpConnectionMap connections_;  // GUARY BY mutex_, 管理所有TcpConnection的生命周期
+
     MessageCallback messageCallback_;
 };
 #endif // !__TCP_SERVER_H__

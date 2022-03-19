@@ -2,59 +2,68 @@
 #define __TIMER_QUEUE_H__
 
 #include <sys/timerfd.h>
-#include <assert.h>
 #include <sys/time.h>
+#include <unistd.h>
+#include <assert.h>
 
-#include <set>
-#include <memory>
 #include <vector>
-#include <functional>
+#include <set>
+#include <unordered_map>
 
 #include "NonCopyable.h"
-#include "Socket.h"
 
-class Channel;
-class EventLoop;
-class TcpConnection;
+class TimerQueue;
+class TimerCompare;
+
+using TimerId = std::size_t;
+
+class Timer {
+public:
+    explicit Timer(TimerId id_, long expiredMsec_) 
+        : id(id_), expiredMsec(expiredMsec_) {}
+
+    bool operator==(const Timer& rhs) const {
+        return id == rhs.id;
+    }
+
+    const TimerId id;
+    const long expiredMsec;
+};
+
+struct TimerCompare {
+    bool operator()(const Timer& lhs, const Timer& rhs) const {
+        return (lhs.expiredMsec == rhs.expiredMsec) ? 
+                    (lhs.id < rhs.id) : 
+                    (lhs.expiredMsec < rhs.expiredMsec);
+    }
+};
 
 class TimerQueue : NonCopyable {
-private:
-    struct Timer {
-        long expiredMsec;
-        std::weak_ptr<TcpConnection> connection;
-
-        Timer(long expiredMsec_, std::shared_ptr<TcpConnection> connection_) : expiredMsec(expiredMsec_), connection(connection_) {}
-    };
-
-    struct TimerLess {
-        bool operator()(const Timer &lhs, const Timer &rhs) const {
-            return lhs.expiredMsec < rhs.expiredMsec;
-        }
-    };
-
 public:
-    using ExpiredCallback = std::function<void (std::vector<std::weak_ptr<TcpConnection>> &)>;
-
-    explicit TimerQueue(EventLoop *loop, ExpiredCallback cb, long intervalMsec = 10 * 1000);
+    TimerQueue(long intervalMsec);
 
     ~TimerQueue();
 
-    void addTimer(std::shared_ptr<TcpConnection> conn);
+    void handleExpired();
 
-    std::vector<std::weak_ptr<TcpConnection>> &getExpired() {
-        return expiredConnections_;
-    }
+    int timerfd() const { return timerfd_; }
+
+    std::vector<Timer> &getExpiredTimers() { return expiredTimers_; }
+
+    TimerId addTimer(long expiredMsecFromNow);
+
+    void deleteTimer(TimerId timerId);
+
+    void updateTimer(TimerId timerId, long expiredMsecFromNow);
 
 private:
-    void handleRead();  // timerfd_
-
     int timerfd_;
     long intervalMsec_;
-    EventLoop *loop_;
-    ExpiredCallback cb_;
+    TimerId timerId_;
 
-    std::unique_ptr<Channel> timerfdChannel_;
-    std::set<Timer, TimerLess> timers_;
-    std::vector<std::weak_ptr<TcpConnection>> expiredConnections_;
+    std::set<Timer, TimerCompare> timers_;
+    std::unordered_map<TimerId, long> expiredMsec_;
+
+    std::vector<Timer> expiredTimers_;
 };
 #endif // !__TIMER_QUEUE_H__
